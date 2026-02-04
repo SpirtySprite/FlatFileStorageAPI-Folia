@@ -1,0 +1,9 @@
+name: FlatFileStorageAPI
+version: 1.0.0
+main: me.kirug.flatfilestorage.FlatFilePlugin
+api-version: 1.21
+description: Industrial-grade high-performance flat file storage API.
+commands:
+  storage:
+    description: Admin commands for storage
+    permission: flatfilestorage.admin
