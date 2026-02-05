@@ -1,6 +1,6 @@
 # FlatFileStorageAPI-Folia 🚀
 
-![Version](https://img.shields.io/badge/version-2.0-blue) ![Folia](https://img.shields.io/badge/Folia-Supported-green) ![Java](https://img.shields.io/badge/Java-21+-orange)
+![Version](https://img.shields.io/badge/version-1.1-blue) ![Folia](https://img.shields.io/badge/Folia-Supported-green) ![Java](https://img.shields.io/badge/Java-21+-orange)
 
 **The heavy-duty, thread-safe storage engine for modern Minecraft servers.**  
 Designed for **Folia**, **Paper**, and high-concurrency environments.
