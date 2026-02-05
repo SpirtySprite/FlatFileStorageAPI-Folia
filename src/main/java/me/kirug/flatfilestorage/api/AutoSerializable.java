@@ -25,6 +25,7 @@ public abstract class AutoSerializable implements SerializableObject {
         INT, LONG, DOUBLE, FLOAT, BOOLEAN, STRING, UUID, 
         BIG_INTEGER, LOCATION, CHUNK_REF, INVENTORY_DATA, COMPONENT,
         BYTE_ARRAY, INT_ARRAY, LONG_ARRAY, VECTOR, BLOCK_FACE,
+        OPTIONAL, INSTANT, LOCAL_DATE_TIME,
         LIST, MAP, ENUM, AUTO_SERIALIZABLE, UNKNOWN
     }
 
@@ -35,6 +36,13 @@ public abstract class AutoSerializable implements SerializableObject {
 
     private static List<FieldHandler> getHandlers(Class<?> clazz) {
         return CACHE.computeIfAbsent(clazz, c -> {
+            // DEVELOPER SAFETY: Check for no-args constructor
+            try {
+                c.getDeclaredConstructor();
+            } catch (NoSuchMethodException e) {
+                throw new RuntimeException("DEVELOPER ERROR: Class " + c.getName() + " extends AutoSerializable but is missing a public no-args constructor! It is required for loading.");
+            }
+            
             List<FieldHandler> handlers = new ArrayList<>();
             MethodHandles.Lookup lookup = MethodHandles.lookup();
 
@@ -56,6 +64,8 @@ public abstract class AutoSerializable implements SerializableObject {
                     } else if (type == HandlerType.MAP) {
                          genK = getType(getGenericArg(field, 0));
                          genV = getType(getGenericArg(field, 1));
+                    } else if (type == HandlerType.OPTIONAL) {
+                         genV = getType(getGenericArg(field, 0));
                     }
 
                     handlers.add(new FieldHandler(getter, setter, ann.order(), ann.since(), type, field.getType(), genK, genV));
@@ -86,6 +96,9 @@ public abstract class AutoSerializable implements SerializableObject {
         if (type == int[].class) return HandlerType.INT_ARRAY;
         if (type == long[].class) return HandlerType.LONG_ARRAY;
         if (net.kyori.adventure.text.Component.class.isAssignableFrom(type)) return HandlerType.COMPONENT;
+        if (java.time.Instant.class.isAssignableFrom(type)) return HandlerType.INSTANT;
+        if (java.time.LocalDateTime.class.isAssignableFrom(type)) return HandlerType.LOCAL_DATE_TIME;
+        if (Optional.class.isAssignableFrom(type)) return HandlerType.OPTIONAL;
         if (List.class.isAssignableFrom(type)) return HandlerType.LIST;
         if (Map.class.isAssignableFrom(type)) return HandlerType.MAP;
         if (Enum.class.isAssignableFrom(type)) return HandlerType.ENUM;
@@ -93,23 +106,7 @@ public abstract class AutoSerializable implements SerializableObject {
         return HandlerType.UNKNOWN; 
     }
     
-    private static Class<?> getGenericArg(Field f, int index) {
-         try {
-             Type genericType = f.getGenericType();
-             if (genericType instanceof ParameterizedType) {
-                 Type[] args = ((ParameterizedType) genericType).getActualTypeArguments();
-                 if (index < args.length) {
-                     if (args[index] instanceof Class) {
-                         return (Class<?>) args[index];
-                     } else if (args[index] instanceof ParameterizedType) {
-                         // Handle nested generics like List<List<String>> -> raw type List
-                         return (Class<?>) ((ParameterizedType) args[index]).getRawType();
-                     }
-                 }
-             }
-         } catch (Exception ignored) {}
-         return Object.class;
-    }
+    // ... [GenericArg Helper] ...
 
     @Override
     public void write(VarOutputStream out) throws java.io.IOException {
@@ -123,30 +120,17 @@ public abstract class AutoSerializable implements SerializableObject {
             }
         }
     }
-
-    @Override
-    public void read(VarInputStream in, int version) throws java.io.IOException {
-        List<FieldHandler> handlers = getHandlers(this.getClass());
-        for (FieldHandler h : handlers) {
-            if (version < h.since) continue; // Skip new fields when loading old data
-            
-            try {
-                Object val = readVal(in, h.type, h.fieldClass, h.genericK, h.genericV, version);
-                h.setter.invoke(this, val);
-            } catch (Throwable e) {
-                throw new java.io.IOException("AutoSerialize Read Error", e);
-            }
-        }
-    }
     
-    // ================= HELPER DISPATCHERS =================
+    // ...
 
+    @SuppressWarnings("unchecked")
     private void writeVal(VarOutputStream out, Object va, HandlerType t, Class<?> clazz, HandlerType k, HandlerType v) throws java.io.IOException {
-         if (va == null) {
-              // Ensure we write "null" markers for complex types if the underlying writer doesn't.
-              // Primitives are handled by their wrapper writers usually, but let's be safe.
-              // Actually VarOutputStream methods like writeString handles null. 
-              // writeList/Map handles null.
+         // Null handling
+         if (va == null && t != HandlerType.OPTIONAL) { // Optional handles null/empty itself
+              // For other recursive types potentially?
+              // Assuming primitives handled by writer, objects might need null check if not handled?
+              // VarOutputStream typically needs explicit null check for objects unless specific method handles it.
+              // We rely on specific handlers.
          }
          
          switch (t) {
@@ -167,6 +151,23 @@ public abstract class AutoSerializable implements SerializableObject {
              case LONG_ARRAY -> out.writeLongArray((long[]) va);
              case VECTOR -> out.writeVector((org.bukkit.util.Vector) va);
              case BLOCK_FACE -> out.writeEnum((org.bukkit.block.BlockFace) va);
+             case INSTANT -> {
+                  if (va == null) out.writeLong(Long.MIN_VALUE); // Null marker
+                  else out.writeLong(((java.time.Instant) va).toEpochMilli());
+             }
+             case LOCAL_DATE_TIME -> {
+                  if (va == null) out.writeString(""); 
+                  else out.writeString(((java.time.LocalDateTime) va).toString());
+             }
+             case OPTIONAL -> {
+                  Optional<?> opt = (Optional<?>) va;
+                  if (opt != null && opt.isPresent()) {
+                      out.writeBoolean(true);
+                      writeVal(out, opt.get(), v, null, null, null);
+                  } else {
+                      out.writeBoolean(false);
+                  }
+             }
              case AUTO_SERIALIZABLE -> {
                   if (va == null) {
                       out.writeBoolean(false);
@@ -201,6 +202,24 @@ public abstract class AutoSerializable implements SerializableObject {
              case LONG_ARRAY -> { return in.readLongArray(); }
              case VECTOR -> { return in.readVector(); }
              case BLOCK_FACE -> { return in.readEnum(org.bukkit.block.BlockFace.class); }
+             case INSTANT -> {
+                  long val = in.readVarLong();
+                  if (val == Long.MIN_VALUE) return null;
+                  return java.time.Instant.ofEpochMilli(val);
+             }
+             case LOCAL_DATE_TIME -> {
+                  String val = in.readString();
+                  if (val == null || val.isEmpty()) return null;
+                  return java.time.LocalDateTime.parse(val);
+             }
+             case OPTIONAL -> {
+                  if (in.readBoolean()) {
+                      Object val = readVal(in, v, null, null, null, version);
+                      return Optional.ofNullable(val);
+                  } else {
+                      return Optional.empty();
+                  }
+             }
              case AUTO_SERIALIZABLE -> {
                  if (!in.readBoolean()) return null;
                  try {

@@ -5,6 +5,11 @@ import me.kirug.flatfilestorage.api.StorageAPI;
 import me.kirug.flatfilestorage.io.VarInputStream;
 import me.kirug.flatfilestorage.io.VarOutputStream;
 
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+import com.github.luben.zstd.Zstd;
+
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,8 +30,8 @@ public class FlatFileStorage implements StorageAPI {
     private final Path rootDir;
     private final Logger logger;
     
-    // RAM Cache: Instant reads
-    private final Map<String, SerializableObject> cache = new ConcurrentHashMap<>();
+    // RAM Cache: Caffeine for smart eviction
+    private final Cache<String, SerializableObject> cache;
     
     // Write Coalescing: Tracking pending saves
     private final Map<String, CompletableFuture<Void>> pendingSaves = new ConcurrentHashMap<>();
@@ -54,6 +59,19 @@ public class FlatFileStorage implements StorageAPI {
         for (int i = 0; i < STRIPE_COUNT; i++) {
             locks[i] = new ReentrantReadWriteLock();
         }
+        
+        // Initialize Smart Cache
+        this.cache = Caffeine.newBuilder()
+                .maximumSize(2000)
+                .expireAfterAccess(15, java.util.concurrent.TimeUnit.MINUTES)
+                .removalListener((String key, SerializableObject value, RemovalCause cause) -> {
+                    if (value instanceof me.kirug.flatfilestorage.api.AbstractSerializable) {
+                         if (((me.kirug.flatfilestorage.api.AbstractSerializable) value).isDirty()) {
+                             this.save(key, value); // Auto-flush on eviction
+                         }
+                    }
+                })
+                .build();
     }
     
     private ReadWriteLock getLock(String id) {
@@ -76,7 +94,7 @@ public class FlatFileStorage implements StorageAPI {
             
             ioExecutor.submit(() -> {
                 try {
-                    SerializableObject currentData = cache.get(id);
+                    SerializableObject currentData = cache.getIfPresent(id);
                     if (currentData == null) { 
                         future.complete(null); 
                         return;
@@ -88,21 +106,47 @@ public class FlatFileStorage implements StorageAPI {
 
                     Path tmpFile = rootDir.resolve(id + "." + java.util.UUID.randomUUID() + ".tmp");
                     
+                    // Buffer to memory first to determine size & compression
+                    ByteArrayOutputStream buffer = new ByteArrayOutputStream(1024);
+                    try (VarOutputStream bufOut = new VarOutputStream(buffer)) {
+                        bufOut.writeVarInt(currentData.getVersion());
+                        currentData.write(bufOut);
+                    }
+                    
+                    byte[] rawData = buffer.toByteArray();
+                    boolean compress = rawData.length > 512;
+                    byte[] payload;
+                    
+                    if (compress) {
+                        payload = Zstd.compress(rawData);
+                    } else {
+                        payload = rawData;
+                    }
+                    
                     try {
-                        java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
-                        
                         try (FileOutputStream fos = new FileOutputStream(tmpFile.toFile());
-                             BufferedOutputStream bos = new BufferedOutputStream(fos);
-                             java.util.zip.CheckedOutputStream checkedOut = new java.util.zip.CheckedOutputStream(bos, crc);
-                             VarOutputStream out = new VarOutputStream(checkedOut)) {
-                            
-                            out.writeVarInt(currentData.getVersion());
-                            currentData.write(out);
-                            
-                            long val = crc.getValue();
-                            out.writeLong(val); 
+                             BufferedOutputStream bos = new BufferedOutputStream(fos)) {
                              
-                            out.flush();
+                            DataOutputStream rawDos = new DataOutputStream(bos);
+                            // 1. Write Magic
+                            rawDos.writeInt(MAGIC_HEADER);
+                            
+                            // 2. Prepare CRC (Calculated on Flag + Payload)
+                            java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
+                            
+                            // 3. Write Flag
+                            int flag = compress ? 1 : 0;
+                            rawDos.writeByte(flag);
+                            crc.update(flag);
+                            
+                            // 4. Write Payload
+                            rawDos.write(payload);
+                            crc.update(payload);
+                            
+                            // 5. Write CRC
+                            rawDos.writeLong(crc.getValue());
+                            
+                            rawDos.flush();
                             fos.getFD().sync();
                         }
                         
@@ -142,15 +186,15 @@ public class FlatFileStorage implements StorageAPI {
 
     @Override
     public <T extends SerializableObject> CompletableFuture<T> load(String id, Supplier<T> factory) {
-        if (cache.containsKey(id)) {
-            SerializableObject cached = cache.get(id);
+        SerializableObject cached = cache.getIfPresent(id);
+        if (cached != null) {
             try {
                 T dummy = factory.get();
                 if (dummy.getClass().isInstance(cached)) {
                     return CompletableFuture.completedFuture((T) cached);
                 } else {
                      logger.warning("Cache mismatch for " + id + ". Expected " + dummy.getClass().getSimpleName() + " but found " + cached.getClass().getSimpleName());
-                     cache.remove(id);
+                     cache.invalidate(id);
                 }
             } catch (Exception e) {
                  return CompletableFuture.failedFuture(e);
@@ -184,7 +228,7 @@ public class FlatFileStorage implements StorageAPI {
                 }
                 
                 if (result != null) {
-                    cache.putIfAbsent(id, result);
+                    cache.put(id, result);
                 }
                 
                 return result; 
@@ -195,38 +239,86 @@ public class FlatFileStorage implements StorageAPI {
         }, ioExecutor);
     }
 
+    private static final int MAGIC_HEADER = 0x46465341; // "FFSA"
+
     // Extraction helper for loading logic
     private <T extends SerializableObject> T loadFromFile(Path path, String id, Supplier<T> factory) throws IOException {
-        if (!Files.exists(path) || Files.size(path) == 0) return null;
+        if (!Files.exists(path) || Files.size(path) < 13) return null; // Min 4 magic + 1 flag + 4 crc(partial) -> Actually 4+1+Data+8. Empty data?
         
-        byte[] allBytes = Files.readAllBytes(path);
-        if (allBytes.length < 8) throw new IOException("File too short");
-        
-        int dataLen = allBytes.length - 8;
-        java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
-        crc.update(allBytes, 0, dataLen);
-        
-        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(allBytes, dataLen, 8);
-        long storedChecksum = buffer.getLong();
-        
-        if (crc.getValue() != storedChecksum) throw new IOException("CRC Checksum Mismatch");
-
-        T instance = factory.get();
-        try (ByteArrayInputStream bis = new ByteArrayInputStream(allBytes, 0, dataLen);
-             VarInputStream in = new VarInputStream(bis)) {
-            int version = in.readVarInt();
-            instance.read(in, version);
+        try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(path, java.nio.file.StandardOpenOption.READ)) {
+             long size = channel.size();
+             
+             // Use MappedByteBuffer for ultra-fast access
+             java.nio.MappedByteBuffer buf = channel.map(java.nio.channels.FileChannel.MapMode.READ_ONLY, 0, size);
+             
+             // 1. Check Magic Header
+             int magic = buf.getInt();
+             if (magic != MAGIC_HEADER) {
+                 logger.warning("Invalid File Header for " + id + ": " + Integer.toHexString(magic));
+                 return null;
+             }
+             
+             // Structure: [MAGIC 4] [FLAG 1] [PAYLOAD N] [CRC 8]
+             // CRC covers [FLAG] + [PAYLOAD]
+             
+             long payloadEnd = size - 8;
+             long dataStart = 4;
+             
+             // Verify CRC
+             java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
+             
+             buf.position((int)dataStart); 
+             buf.limit((int)payloadEnd); 
+             crc.update(buf);
+             
+             long calculatedCrc = crc.getValue();
+             
+             buf.limit((int)size);
+             buf.position((int)payloadEnd);
+             long storedCrc = buf.getLong();
+             
+             if (calculatedCrc != storedCrc) {
+                 throw new IOException("CRC Checksum Mismatch for " + id);
+             }
+             
+             // Read Data
+             buf.position(4); // Back to Flag
+             byte flag = buf.get();
+             boolean compressed = (flag == 1);
+             
+             int payloadLen = (int)(payloadEnd - 5); // Total - Magic(4) - Flag(1) - CRC(8)
+             byte[] payload = new byte[payloadLen];
+             buf.get(payload); // Read status is fine because we reset position
+             
+             byte[] finalData;
+             if (compressed) {
+                 long decompressedSize = Zstd.decompressedSize(payload);
+                 finalData = Zstd.decompress(payload, (int)decompressedSize);
+             } else {
+                 finalData = payload;
+             }
+             
+             // Deserialize
+             try (ByteArrayInputStream bis = new ByteArrayInputStream(finalData);
+                  VarInputStream in = new VarInputStream(bis)) {
+                  
+                 int version = in.readVarInt();
+                 T instance = factory.get();
+                 instance.read(in, version);
+                 
+                 if (instance instanceof me.kirug.flatfilestorage.api.AbstractSerializable) {
+                    ((me.kirug.flatfilestorage.api.AbstractSerializable) instance).markSaved();
+                 }
+                 return instance;
+             }
         }
-        
-        if (instance instanceof me.kirug.flatfilestorage.api.AbstractSerializable) {
-            ((me.kirug.flatfilestorage.api.AbstractSerializable) instance).markSaved();
-        }
-        return instance;
     }
+    
+    // Simple adapter (Removed, using ByteArrayInputStream for finalData)
 
     @Override
     public CompletableFuture<Void> delete(String id) {
-        cache.remove(id);
+        cache.invalidate(id); // Caffeine method
         
         return CompletableFuture.runAsync(() -> {
             ReadWriteLock lock = getLock(id);
@@ -244,13 +336,13 @@ public class FlatFileStorage implements StorageAPI {
     
     @Override
     public CompletableFuture<Boolean> exists(String id) {
-        if (cache.containsKey(id)) return CompletableFuture.completedFuture(true);
+        if (cache.getIfPresent(id) != null) return CompletableFuture.completedFuture(true);
         return CompletableFuture.supplyAsync(() -> Files.exists(rootDir.resolve(id + ".var")), ioExecutor);
     }
     
     @Override
     public void invalidateCache(String id) {
-        cache.remove(id);
+        cache.invalidate(id);
     }
 
     @Override
