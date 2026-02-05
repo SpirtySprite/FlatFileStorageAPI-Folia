@@ -244,4 +244,12 @@ public class VarOutputStream extends DataOutputStream {
             writeItemStack(entry.getValue());
         }
     }
+
+    public void writeComponent(net.kyori.adventure.text.Component component) throws IOException {
+        if (component == null) {
+            writeString(null);
+        } else {
+            writeString(GSON.serialize(component));
+        }
+    }
 }

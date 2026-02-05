@@ -106,7 +106,23 @@ public abstract class AutoSerializable implements SerializableObject {
         return HandlerType.UNKNOWN; 
     }
     
-    // ... [GenericArg Helper] ...
+    private static Class<?> getGenericArg(Field f, int index) {
+         try {
+             Type genericType = f.getGenericType();
+             if (genericType instanceof ParameterizedType) {
+                 Type[] args = ((ParameterizedType) genericType).getActualTypeArguments();
+                 if (index < args.length) {
+                     if (args[index] instanceof Class) {
+                         return (Class<?>) args[index];
+                     } else if (args[index] instanceof ParameterizedType) {
+                         // Handle nested generics like List<List<String>> -> raw type List
+                         return (Class<?>) ((ParameterizedType) args[index]).getRawType();
+                     }
+                 }
+             }
+         } catch (Exception ignored) {}
+         return Object.class;
+    }
 
     @Override
     public void write(VarOutputStream out) throws java.io.IOException {
@@ -121,7 +137,20 @@ public abstract class AutoSerializable implements SerializableObject {
         }
     }
     
-    // ...
+    @Override
+    public void read(VarInputStream in, int version) throws java.io.IOException {
+        List<FieldHandler> handlers = getHandlers(this.getClass());
+        for (FieldHandler h : handlers) {
+            if (version < h.since) continue; // Skip new fields when loading old data
+            
+            try {
+                Object val = readVal(in, h.type, h.fieldClass, h.genericK, h.genericV, version);
+                h.setter.invoke(this, val);
+            } catch (Throwable e) {
+                throw new java.io.IOException("AutoSerialize Read Error", e);
+            }
+        }
+    }
 
     @SuppressWarnings("unchecked")
     private void writeVal(VarOutputStream out, Object va, HandlerType t, Class<?> clazz, HandlerType k, HandlerType v) throws java.io.IOException {
