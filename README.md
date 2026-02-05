@@ -124,7 +124,7 @@ debug: false
 When using this API on **Folia**:
 
 1.  **NEVER** modify `AutoSerializable` objects that are currently potentially being saved on another thread without synchronization (though the API snapshots data as fast as possible).
-2.  **Inventory**: Use the internal `InventoryData` type for storage. Convert to live Burkit `Inventory` only when showing to a player on the main thread.
+2.  **Inventory**: Use the internal `InventoryData` type for storage. Convert to live Bukkit `Inventory` only when showing to a player on the main thread.
 3.  **Worlds**: The API stores World UIDs. Do NOT call `Bukkit.getWorld(uid)` inside an async chain. Do it on the Region Thread.
 
 ---
