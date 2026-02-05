@@ -16,6 +16,9 @@ public class VarInputStream extends DataInputStream {
     public VarInputStream(InputStream in) {
         super(in);
     }
+    
+    private static final net.kyori.adventure.text.serializer.gson.GsonComponentSerializer GSON = 
+        net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson();
 
     public int readVarInt() throws IOException {
         int value = 0;
@@ -139,17 +142,70 @@ public class VarInputStream extends DataInputStream {
     }
 
     // ==========================================
+    //              PRIMITIVE ARRAYS
+    // ==========================================
+
+    public byte[] readByteArray() throws IOException {
+        int len = readVarInt();
+        if (len == -1) return null;
+        byte[] array = new byte[len];
+        readFully(array);
+        return array;
+    }
+
+    public int[] readIntArray() throws IOException {
+        int len = readVarInt();
+        if (len == -1) return null;
+        int[] array = new int[len];
+        for (int i = 0; i < len; i++) array[i] = readVarInt();
+        return array;
+    }
+
+    public long[] readLongArray() throws IOException {
+        int len = readVarInt();
+        if (len == -1) return null;
+        long[] array = new long[len];
+        for (int i = 0; i < len; i++) array[i] = readVarLong();
+        return array;
+    }
+
+    public net.kyori.adventure.text.Component readComponent() throws IOException {
+        String json = readString();
+        if (json == null || json.isEmpty()) return null;
+        return GSON.deserialize(json);
+    }
+    
+    // ==========================================
     //              BUKKIT TYPES
     // ==========================================
 
+    public org.bukkit.util.Vector readVector() throws IOException {
+        if (!readBoolean()) return null;
+        return new org.bukkit.util.Vector(readDouble(), readDouble(), readDouble());
+    }
+
+
+    /**
+     * Reads a World UID. Does not return a World object to avoid main-thread calls.
+     */
+    public java.util.UUID readWorldId() throws IOException {
+        return readUUID();
+    }
+    
+    @Deprecated
     public org.bukkit.World readWorld() throws IOException {
-        java.util.UUID uid = readUUID();
-        if (uid == null) return null;
-        return org.bukkit.Bukkit.getWorld(uid);
+         // Still needed for legacy or if user knows what they are doing, 
+         // but preferably use readWorldId()
+         java.util.UUID uid = readUUID();
+         if (uid == null) return null;
+         return org.bukkit.Bukkit.getWorld(uid);
     }
 
     public org.bukkit.Location readLocation() throws IOException {
         if (!readBoolean()) return null;
+        // WARNING: Thread unsafe if used blindly.
+        // We construct it, but getting World async is risky if world isn't loaded?
+        // Actually Bukkit.getWorld(UUID) is usually safe for lookup.
         org.bukkit.World world = readWorld();
         double x = readDouble();
         double y = readDouble();
@@ -159,12 +215,12 @@ public class VarInputStream extends DataInputStream {
         return new org.bukkit.Location(world, x, y, z, yaw, pitch);
     }
 
-    public org.bukkit.Chunk readChunk() throws IOException {
+    public me.kirug.flatfilestorage.api.data.ChunkReference readChunk() throws IOException {
         if (!readBoolean()) return null;
-        org.bukkit.World world = readWorld();
+        String worldName = readString();
         int x = readVarInt();
         int z = readVarInt();
-        return world.getChunkAt(x, z);
+        return new me.kirug.flatfilestorage.api.data.ChunkReference(worldName, x, z);
     }
 
     public org.bukkit.inventory.ItemStack readItemStack() throws IOException {
@@ -176,18 +232,20 @@ public class VarInputStream extends DataInputStream {
         return org.bukkit.inventory.ItemStack.deserializeBytes(bytes);
     }
 
-    public org.bukkit.inventory.Inventory readInventory(String title) throws IOException {
+    public me.kirug.flatfilestorage.api.data.InventoryData readInventory() throws IOException {
         int size = readVarInt();
         if (size == -1) return null;
         
-        // TODO: Support various inventory types. For now default to CHEST sized logic or custom.
-        // If title is null, no custom title.
-        org.bukkit.inventory.Inventory inv = org.bukkit.Bukkit.createInventory(null, size, title != null ? title : "Inventory");
+        net.kyori.adventure.text.Component title = readComponent();
+        int contentSize = readVarInt();
         
-        for (int i = 0; i < size; i++) {
+        java.util.Map<Integer, org.bukkit.inventory.ItemStack> contents = new java.util.HashMap<>(contentSize);
+        for (int i = 0; i < contentSize; i++) {
+            int slot = readVarInt();
             org.bukkit.inventory.ItemStack item = readItemStack();
-            if (item != null) inv.setItem(i, item);
+            if (item != null) contents.put(slot, item);
         }
-        return inv;
+        
+        return new me.kirug.flatfilestorage.api.data.InventoryData(title, size, contents);
     }
 }

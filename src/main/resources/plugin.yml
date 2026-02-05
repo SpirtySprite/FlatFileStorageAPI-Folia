@@ -2,6 +2,7 @@ name: FlatFileStorageAPI
 version: 1.0.0
 main: me.kirug.flatfilestorage.FlatFilePlugin
 api-version: 1.21
+folia-supported: true
 description: Industrial-grade high-performance flat file storage API.
 commands:
   storage:

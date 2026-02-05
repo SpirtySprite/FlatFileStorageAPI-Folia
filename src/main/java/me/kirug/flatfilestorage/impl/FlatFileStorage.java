@@ -48,11 +48,7 @@ public class FlatFileStorage implements StorageAPI {
             e.printStackTrace();
         }
 
-        this.ioExecutor = Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "FlatFileStorage-IO");
-            t.setPriority(Thread.NORM_PRIORITY);
-            return t;
-        });
+        this.ioExecutor = Executors.newVirtualThreadPerTaskExecutor();
         
         this.locks = new ReadWriteLock[STRIPE_COUNT];
         for (int i = 0; i < STRIPE_COUNT; i++) {
@@ -93,7 +89,7 @@ public class FlatFileStorage implements StorageAPI {
                     Path tmpFile = rootDir.resolve(id + "." + java.util.UUID.randomUUID() + ".tmp");
                     
                     try {
-                        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+                        java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
                         
                         try (FileOutputStream fos = new FileOutputStream(tmpFile.toFile());
                              BufferedOutputStream bos = new BufferedOutputStream(fos);
@@ -207,7 +203,7 @@ public class FlatFileStorage implements StorageAPI {
         if (allBytes.length < 8) throw new IOException("File too short");
         
         int dataLen = allBytes.length - 8;
-        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
         crc.update(allBytes, 0, dataLen);
         
         java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(allBytes, dataLen, 8);

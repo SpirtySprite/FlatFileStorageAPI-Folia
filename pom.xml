@@ -35,6 +35,9 @@
             <goals>
               <goal>shade</goal>
             </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+            </configuration>
           </execution>
         </executions>
       </plugin>
@@ -58,7 +61,7 @@
     <dependency>
       <groupId>dev.folia</groupId>
       <artifactId>folia-api</artifactId>
-      <version>1.20.1-R0.1-SNAPSHOT</version> <!-- Folia 1.21.1 not always directly available, usually follows 1.20.x structure or paper-api. Using plausible version, advised to check for specific if fail. -->
+      <version>1.20.1-R0.1-SNAPSHOT</version>
       <scope>provided</scope>
     </dependency>
   </dependencies>

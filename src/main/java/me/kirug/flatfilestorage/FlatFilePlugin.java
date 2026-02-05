@@ -13,9 +13,16 @@ public class FlatFilePlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        // Init Storage in plugin folder/data
-        File dataDir = new File(getDataFolder(), "data");
-        this.storageAPI = new FlatFileStorage(dataDir.toPath(), getLogger());
+        saveDefaultConfig();
+        try {
+            File dataDir = new File(getDataFolder(), "data");
+            this.storageAPI = new FlatFileStorage(dataDir.toPath(), getLogger());
+            getLogger().info("Standard Flat-File Engine activated.");
+        } catch (Exception e) {
+            getLogger().severe("FAILED to initialize storage engine. Falling back to default.");
+            File dataDir = new File(getDataFolder(), "data");
+            this.storageAPI = new FlatFileStorage(dataDir.toPath(), getLogger());
+        }
         
         // Register Command
         getCommand("storage").setExecutor(new TestCommand(this, storageAPI));
@@ -23,14 +30,14 @@ public class FlatFilePlugin extends JavaPlugin {
         // Register Provider
         me.kirug.flatfilestorage.api.FlatFileProvider.register(storageAPI);
         
-        getLogger().info("FlatFileStorageAPI (Industrial-Grade) enabled!");
+        getLogger().info("FlatFileStorageAPI enabled!");
     }
 
     @Override
     public void onDisable() {
         if (storageAPI != null) {
             getLogger().info("Flushing storage queues...");
-            // Trigger the internal flush and executor shutdown
+            // Trigger the internal flush and executor svhutdown
             storageAPI.shutdown();
             
             // Clean up the provider to prevent memory leaks or stale references

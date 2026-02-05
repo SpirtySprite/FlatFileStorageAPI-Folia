@@ -14,6 +14,9 @@ public class VarOutputStream extends DataOutputStream {
     public VarOutputStream(OutputStream out) {
         super(out);
     }
+    
+    private static final net.kyori.adventure.text.serializer.gson.GsonComponentSerializer GSON = 
+        net.kyori.adventure.text.serializer.gson.GsonComponentSerializer.gson();
 
     /**
      * Writes an exact number of bytes from the integer using LEB128 encoding.
@@ -132,8 +135,50 @@ public class VarOutputStream extends DataOutputStream {
     }
 
     // ==========================================
+    //              PRIMITIVE ARRAYS
+    // ==========================================
+
+    public void writeByteArray(byte[] array) throws IOException {
+        if (array == null) {
+            writeVarInt(-1);
+        } else {
+            writeVarInt(array.length);
+            write(array);
+        }
+    }
+
+    public void writeIntArray(int[] array) throws IOException {
+        if (array == null) {
+            writeVarInt(-1);
+        } else {
+            writeVarInt(array.length);
+            for (int i : array) writeVarInt(i);
+        }
+    }
+
+    public void writeLongArray(long[] array) throws IOException {
+        if (array == null) {
+            writeVarInt(-1);
+        } else {
+            writeVarInt(array.length);
+            for (long l : array) writeVarLong(l);
+        }
+    }
+
+    // ==========================================
     //              BUKKIT TYPES
     // ==========================================
+
+    public void writeVector(org.bukkit.util.Vector vector) throws IOException {
+        if (vector == null) {
+            writeBoolean(false);
+        } else {
+            writeBoolean(true);
+            writeDouble(vector.getX());
+            writeDouble(vector.getY());
+            writeDouble(vector.getZ());
+        }
+    }
 
     public void writeWorld(org.bukkit.World world) throws IOException {
         // We only store the UUID. 
@@ -155,15 +200,15 @@ public class VarOutputStream extends DataOutputStream {
         writeFloat(loc.getPitch());
     }
 
-    public void writeChunk(org.bukkit.Chunk chunk) throws IOException {
+    public void writeChunk(me.kirug.flatfilestorage.api.data.ChunkReference chunk) throws IOException {
         if (chunk == null) {
             writeBoolean(false);
             return;
         }
         writeBoolean(true);
-        writeWorld(chunk.getWorld());
-        writeVarInt(chunk.getX());
-        writeVarInt(chunk.getZ());
+        writeString(chunk.worldName());
+        writeVarInt(chunk.x());
+        writeVarInt(chunk.z());
     }
     
     /**
@@ -172,11 +217,6 @@ public class VarOutputStream extends DataOutputStream {
      * or standard ObjectOutputStream wrapper around Bukkit's configuration serialization.
      * 
      * Optimization: We convert the Map<String, Object> from serialize() to binary directly.
-     */
-    /**
-     * Writes an ItemStack using Bukkit's internal serialization.
-     * @param item The item to write.
-     * @throws IOException If an IO error occurs.
      */
     public void writeItemStack(org.bukkit.inventory.ItemStack item) throws IOException {
         if (item == null || item.getType() == org.bukkit.Material.AIR) {
@@ -189,15 +229,19 @@ public class VarOutputStream extends DataOutputStream {
         write(bytes);
     }
 
-    public void writeInventory(org.bukkit.inventory.Inventory inv) throws IOException {
+    public void writeInventory(me.kirug.flatfilestorage.api.data.InventoryData inv) throws IOException {
         if (inv == null) {
             writeVarInt(-1);
             return;
         }
-        writeVarInt(inv.getSize());
-        // Write type if needed? For now just contents.
-        for (int i = 0; i < inv.getSize(); i++) {
-            writeItemStack(inv.getItem(i));
+        writeVarInt(inv.size());
+        writeComponent(inv.title());
+        
+        // Write content map
+        writeVarInt(inv.contents().size());
+        for (java.util.Map.Entry<Integer, org.bukkit.inventory.ItemStack> entry : inv.contents().entrySet()) {
+            writeVarInt(entry.getKey());
+            writeItemStack(entry.getValue());
         }
     }
 }
