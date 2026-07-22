@@ -86,5 +86,12 @@
         <artifactId>zstd-jni</artifactId>
         <version>1.5.5-11</version>
     </dependency>
+    <!-- Tests -->
+    <dependency>
+        <groupId>org.junit.jupiter</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>5.10.2</version>
+        <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

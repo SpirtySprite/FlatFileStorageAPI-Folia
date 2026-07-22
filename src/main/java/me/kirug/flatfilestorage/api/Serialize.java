@@ -11,16 +11,18 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.FIELD)
 public @interface Serialize {
+
     /**
-     * The order in which this field should be written/read.
-     * Must be unique per class.
-     * Use 1, 2, 3...
+     * A permanent, unique field id (like a protobuf field number). Pick a number and never change or
+     * reuse it: the id is what lets you add, remove, or reorder fields without breaking old data.
+     * Removing a field frees nothing - just don't reuse its id for something else. Must be >= 1.
      */
     int order();
 
     /**
-     * The data version this field was introduced in.
-     * If loading a file with a lower version, this field is skipped (left as default).
+     * @deprecated No longer used. The tagged format skips unknown/absent fields automatically, so a
+     * "since version" is unnecessary. Kept only for source compatibility.
      */
+    @Deprecated
     int since() default 0;
 }
